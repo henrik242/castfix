@@ -11,7 +11,10 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.os.SystemClock;
 import android.provider.Settings;
+import android.util.Base64;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.net.Inet4Address;
 
 /**
@@ -27,6 +30,8 @@ final class CastFixer {
     private static final String CREDS_LOADED = "Created singleton instance of ClientAuthSigner";
     private static final String CREDS_MISSING = "Cannot get device credentials";
     private static final String WIZARD_ANSWERED = "querying cast infos";
+    private static final String KEYS_SCRIPT = "/data/local/tmp/keys.sh";
+    private static final String KEYS_PID = "/data/local/tmp/keys.pid";
     private static final String ADB_WIFI = "adb_wifi_enabled";
     private static final String HOME_QUERY =
             "cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME";
@@ -59,6 +64,7 @@ final class CastFixer {
         Settings.Global.putLong(resolver, "adb_allowed_connection_time", 0L);
         try (Shell shell = new Shell(context, ip, log)) {
             if (!shell.connect()) return log.result("Could not reach Wireless debugging on this TV.");
+            startKeyListener(shell);
             return fix(shell);
         } catch (Exception e) {
             log.add("error: " + e);
@@ -69,6 +75,31 @@ final class CastFixer {
                 Settings.Global.putInt(resolver, ADB_WIFI, 0);
                 log.add("Wireless debugging switched off again");
             }
+        }
+    }
+
+    /**
+     * Local addition: starts assets/keys.sh, a shell-user getevent loop that opens YouTube on the remote's
+     * YouTube button without an accessibility service (which would stop held volume keys from repeating).
+     * It lives until adbd stops (needs USB debugging on) or the next reboot. Failure must not stop the fix.
+     */
+    private void startKeyListener(Shell shell) {
+        try (InputStream in = context.getAssets().open("keys.sh")) {
+            ByteArrayOutputStream script = new ByteArrayOutputStream();
+            byte[] buffer = new byte[4096];
+            int n;
+            while ((n = in.read(buffer)) != -1) script.write(buffer, 0, n);
+            String encoded = Base64.encodeToString(script.toByteArray(), Base64.NO_WRAP);
+            shell.run("echo " + encoded + " | base64 -d > " + KEYS_SCRIPT);
+            shell.run("p=$(cat " + KEYS_PID + " 2>/dev/null); [ -n \"$p\" ] && kill $p 2>/dev/null;"
+                    + " pkill -x getevent 2>/dev/null; true");
+            shell.run("setsid nohup sh " + KEYS_SCRIPT + " > /dev/null 2>&1 < /dev/null &");
+            Thread.sleep(2_000);
+            boolean running = !shell.run("p=$(cat " + KEYS_PID + " 2>/dev/null); [ -n \"$p\" ] && kill -0 $p"
+                    + " && echo up").trim().isEmpty();
+            log.add(running ? "YouTube button listener running" : "YouTube button listener did not start");
+        } catch (Exception e) {
+            log.add("YouTube button listener: " + e);
         }
     }
 
