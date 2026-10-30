@@ -87,6 +87,30 @@ final class CastFixer {
         if (stockHomeWasOff) shell.run("pm enable --user 0 " + STOCK_HOME);
         shell.run("pm enable --user 0 " + SETUP);
         log.add("setup wizard on, waiting for the Cast receiver");
+        boolean loaded = waitForCreds(shell, since);
+        log.add(loaded ? "Cast credentials loaded" : "Cast credentials did not load in time");
+        String receiverPid = shell.run("pidof " + CAST_RECEIVER).trim();
+        shell.run("pm disable-user --user 0 " + SETUP);
+        if (stockHomeWasOff) restoreHome(shell, home);
+        // While the stock launcher is on, the receiver also takes a provider from it, and Android kills the
+        // receiver when the launcher goes off again; it comes back without credentials. Load them once more
+        // with only the wizard on, so nothing the receiver holds goes away afterwards.
+        if (stockHomeWasOff) Thread.sleep(3_000);
+        if (loaded &&!receiverPid.equals(shell.run("pidof " + CAST_RECEIVER).trim())) {
+            log.add("Cast receiver restarted, loading the credentials again");
+            since = shell.run("date '+%m-%d %H:%M:%S.000'").trim();
+            shell.run("pm enable --user 0 " + SETUP);
+            shell.run("am crash " + CAST_RECEIVER);
+            loaded = waitForCreds(shell, since);
+            log.add(loaded ? "Cast credentials loaded" : "Cast credentials did not load in time");
+            shell.run("pm disable-user --user 0 " + SETUP);
+            if (stockHomeWasOff) shell.run("cmd package set-home-activity --user 0 " + home);
+        }
+        return log.result(loaded ? "Casting ready." : "Cast credentials did not load; run it again.");
+    }
+
+    /** Waits for the receiver to load its credentials from the wizard, logged after {@code since}. */
+    private boolean waitForCreds(Shell shell, String since) throws Exception {
         boolean loaded = false;
         long answeredAt = 0;
         long deadline = SystemClock.elapsedRealtime() + CREDS_WAIT_MS;
@@ -101,10 +125,7 @@ final class CastFixer {
                     && castLog.indexOf(CREDS_MISSING, query) < 0
                     && SystemClock.elapsedRealtime() - answeredAt >= 6_000);
         }
-        log.add(loaded ? "Cast credentials loaded" : "Cast credentials did not load in time");
-        shell.run("pm disable-user --user 0 " + SETUP);
-        if (stockHomeWasOff) restoreHome(shell, home);
-        return log.result(loaded ? "Casting ready." : "Cast credentials did not load; run it again.");
+        return loaded;
     }
 
     /** Puts the replacement launcher back as Home, or leaves the stock one on if that fails. */
